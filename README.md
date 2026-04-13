@@ -18,7 +18,7 @@ The EVAFusion dataset is publicly available at Hugging Face Datasets:
 
 ![Abstract](Figures/data_show.jpg)
 
-# 🧠 Model Training
+#  Model Training
 
 EVAFusion training consists of **two stages**:
 
@@ -82,7 +82,7 @@ The trained IVIF model will be saved automatically to:
 checkpoints/
 ```
 
-# 🔍 Inference
+#  Inference
 
 After training, run the following command for fusion inference:
 
@@ -100,3 +100,12 @@ python test_Fusion.py
 
 ![Abstract](Figures/Qualitative_comparison.jpg)
 
+## Citation
+```
+@article{liu2026bridging,
+  title={Bridging Human Evaluation to Infrared and Visible Image Fusion},
+  author={Liu, Jinyuan and Li, Xingyuan and Mei, Qingyun and Xu, Haoyuan and Jiang, Zhiying and Ma, Long and Liu, Risheng and Fan, Xin},
+  journal={arXiv preprint arXiv:2603.03871},
+  year={2026}
+}
+```

@@ -12,6 +12,10 @@ conda env create -f environment.yml
 
 ## Dataset Show
 This figure overviews the collected dataset, highlighting its data, label, and scene diversity.
+
+The EVAFusion dataset is publicly available at Hugging Face Datasets:
+👉 [https://huggingface.co/datasets/HHOODD/EVAFusion_dataset](sslocal://flow/file_open?url=https%3A%2F%2Fhuggingface.co%2Fdatasets%2FHHOODD%2FEVAFusion_dataset&flow_extra=eyJsaW5rX3R5cGUiOiJjb2RlX2ludGVycHJldGVyIn0=)
+
 ![Abstract](Figures/data_show.jpg)
 
 ## Fusion Results

@@ -18,6 +18,78 @@ The EVAFusion dataset is publicly available at Hugging Face Datasets:
 
 ![Abstract](Figures/data_show.jpg)
 
+# 🧠 Model Training
+
+EVAFusion training consists of **two stages**:
+
+---
+
+# Stage 1: Train Reward Model
+
+The Reward Model is fine‑tuned based on:
+
+```
+google/vit-large-patch16-384
+```
+
+## Step 1: Download Pretrained ViT Model
+
+Please download:
+
+```
+google/vit-large-patch16-384
+```
+
+and place it into the following directory:
+
+```
+RichHF/
+```
+
+Directory example:
+
+```
+RichHF/
+└── vit-large-patch16-384
+```
+
+
+## Step 2: Train Reward Model
+
+After preparing the pretrained model and dataset, run:
+
+```bash
+python train_reward.py
+```
+
+This step will fine‑tune the Reward Model using the **EVAFusion dataset**.
+
+---
+
+# Stage 2: Fine‑Tune IVIF Model with Reward Model
+
+After the Reward Model is trained, run the following script to fine‑tune the final IVIF fusion model:
+
+```bash
+python reward_final.py
+```
+
+This stage uses the trained Reward Model to guide the fusion network optimization.
+
+The trained IVIF model will be saved automatically to:
+
+```
+checkpoints/
+```
+
+# 🔍 Inference
+
+After training, run the following command for fusion inference:
+
+```bash
+python test_Fusion.py
+```
+
 ## Fusion Results
 1. Quantitative comparison of infrared and visible image fusion between our DCEvo and state-of-the-art methods on M3FD, RoadScene, TNO and FMB datasets.
 

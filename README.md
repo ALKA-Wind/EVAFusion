@@ -71,23 +71,13 @@ IVIF 微调只保留 `training/finetune.py` 一个入口，使用模块方式启
 
 当前采用 **SAM + 随机策略 GRPO**：从 DCEvo 输出 logits 的固定方差高斯策略采样融合图，用 SAM 分区后，在**同一张采样融合图的多个语义区域之间**计算优势。默认每对输入采样 1 张图，`--samples-per-input` 只控制重复采样次数，不改变优势分组。默认最多 3 个区域、均匀区域权重、每轮 2 次更新、epsilon=0.2、KL 系数 0.1。
 
-**与论文的对应：保留式 (3) 的跨区域优势、式 (5) 的裁剪形式以及冻结参考策略；将输出绝对变化比率明确修订为真实区域动作概率比率，KL 使用同一高斯策略的精确解析式。** 这是论文框架下的修订实现，不宣称逐公式复现。没有直接奖励反向传播或额外融合辅助损失。
-
-每轮固定采样动作、SAM 掩码、旧策略、奖励与优势；初始参考网络和奖励模型始终冻结。全图分数记录更新前后确定性融合图的奖励，只用于监测。默认使用与奖励训练一致的 `--reward-preprocess processor`。无区域时报错；单区域或所有区域同分时优势为零，不能计作成功启动。`--mask-source h5` 仅用于真实预计算语义掩码；显式全图回退会记录，并不能制造语义优势。
-
-新增参数包括 `--policy-std 0.1`（logit 单位）、`--samples-per-input 1`、`--target-kl 0.02`、`--max-backtracks 16`、`--advantage-eps` 和 `--score-batch-size`。超过旧策略 KL 上限时回滚参数及 Adam 状态并减小本步学习率；重试耗尽时报错。旧 `--ratio-alpha`、`--ratio-denominator-eps`、`--kl-temperature`、`--group-size` 和辅助损失参数不再接受。
-
-上述命令关闭权重衰减，用于验证真实策略梯度；正式默认权重衰减仍为 0.01。输出 `final.pth` 可直接用于 `test_Fusion.py --checkpoint`，推理仍输出确定性融合图，无需 SAM 或奖励模型。
-
-策略定义为 `z~Normal(DCEvo_logits,sigma²I)`、`F=sigmoid(z)`。对每张采样融合图的有效 SAM 区域评分，按区域维度计算 `A_k=(s_k-mean(s))/(std(s)+eps)`；固定采样动作、掩码与优势，用区域内 log 概率之和构造 `r_k=exp(sum(log pi_current-log pi_old))`。目标为区域加权的裁剪优势加同方差高斯策略到初始参考网络的解析 KL。重叠掩码对应区域边际目标，不声称其是全图期望奖励的无偏梯度。
-
 ## 融合推理
 
 ```powershell
 .\.venv\Scripts\python.exe test_Fusion.py --device cpu --datasets M3FD TNO RoadScene --output-dir outputs/fusion
 ```
 
-快速验证（缩放后的指标仅用于检查运行，不用于复现论文）：
+快速验证：
 
 ```powershell
 .\.venv\Scripts\python.exe test_Fusion.py --device cpu --datasets TNO --limit 1 --resize 128 128
@@ -99,7 +89,7 @@ IVIF 微调只保留 `training/finetune.py` 一个入口，使用模块方式启
 .\.venv\Scripts\python.exe test_Fusion.py --device cpu --checkpoint outputs/sam_grpo_diagnostic/final.pth --ir-dir <红外目录> --vi-dir <可见光目录> --output-dir outputs/custom
 ```
 
-图像按文件名配对。推理输出包含融合 PNG 与 CC、PSNR、SSIM、Qabf；计算逻辑统一调用 `Metric/metrics.py`。**推理 PSNR 默认恢复原实验 `Metric_torch.py::PSNR_function` 口径**：图像除以 255，先平均两张源图的归一化 MSE，再计算 `20*log10(255/sqrt(MSE))`，对应历史约 60 dB 的数值量级。它比同一 MSE 的常规 PSNR 高约 48.13 dB；CC、SSIM、Qabf 与图像保存方式不变。结果 JSON 记录 `psnr_mode`，也可通过 `--psnr-mode mean-db/mean-mse` 选择常规口径。完整指标使用下方离线评测入口。
+图像按文件名配对。推理输出包含融合 PNG 与 CC、PSNR、SSIM、Qabf；计算逻辑统一调用 `Metric/metrics.py`。完整指标使用下方离线评测入口。
 
 ## 指标评测
 

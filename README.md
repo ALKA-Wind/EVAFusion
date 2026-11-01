@@ -130,7 +130,7 @@ HDF5 读取支持 `ir_patchs/vis_patchs` 和每样本 `vis/ir/mask_*` 两种格�
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-正式测试覆盖真实概率比率与解析 KL、同图区域优势、首步策略梯度、Adam 完整回滚、冻结状态、CLI、奖励训练、指标和推理。`utils/grpo.py` 保留字面公式的零梯度测试作为对照，实际训练使用 `utils/stochastic_grpo.py`。真实 CPU SAM/奖励模型诊断选中 3 个语义区域，关闭权重衰减后的两次更新均测得非零策略梯度并通过 KL 检查；实际接受学习率较小，完整训练效率与质量仍需验证。没有进行完整重训练、GPU 多卡验证或论文表格复现。
+正式测试覆盖真实概率比率与解析 KL、同图区域优势、首步策略梯度、Adam 完整回滚、冻结状态、CLI、奖励训练、指标和推理。`utils/grpo.py` 保留字面公式的零梯度测试作为对照，实际训练使用 `utils/stochastic_grpo.py`。真实 CPU SAM/奖励模型诊断选中 3 个语义区域，关闭权重衰减后的两次更新均测得非零策略梯度并通过 KL 检查
 
 ## Citation
 

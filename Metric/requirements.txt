@@ -1,0 +1,2 @@
+-r ../requirements.txt
+piq==0.8.0

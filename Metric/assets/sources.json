@@ -1,0 +1,18 @@
+{
+  "piq_version": "0.8.0",
+  "basicsr_commit": "8d56e3a045f9fb3e1d8872f92ee4a4f07f886b0a",
+  "assets": [
+    {
+      "file": "niqe_pris_params.npz",
+      "source": "https://raw.githubusercontent.com/XPixelGroup/BasicSR/8d56e3a045f9fb3e1d8872f92ee4a4f07f886b0a/basicsr/metrics/niqe_pris_params.npz",
+      "bytes": 11850,
+      "sha256": "2a7c182a68c9e7f1b2e2e5ec723279d6f65d912b6fcaf37eb2bf03d7367c4296"
+    },
+    {
+      "file": "brisque_svm_weights.pt",
+      "source": "https://github.com/photosynthesis-team/piq/releases/download/v0.4.0/brisque_svm_weights.pt",
+      "bytes": 114997,
+      "sha256": "e5b048ef5325bae6c57965cf077fadfa5834fcefb02e13611b4ea2d36cf3c52c"
+    }
+  ]
+}

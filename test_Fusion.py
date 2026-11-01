@@ -1,205 +1,94 @@
+"""Fuse paired IR/VIS images using restored DCEvo/EVAFusion checkpoints."""
 import argparse
 import json
-import os
-import sys
 from pathlib import Path
-
+import cv2
 import numpy as np
 import torch
-from tqdm import tqdm
-from scipy import ndimage
-from skimage.metrics import structural_similarity as ssim
+from Metric.metrics import PSNR_MODES, calculate_cc, calculate_psnr, calculate_ssim, fusion_metrics
+from utils.fusion import FusionModel
+from utils.img_read_save import image_read_cv2, img_save
+from utils.paths import load_paths
 
-from sleepnet import (DE_Encoder, DE_Decoder, LowFreqExtractor, HighFreqExtractor,)
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from utils.img_read_save import img_save,image_read_cv2
-import warnings
-import logging
-from torchvision import transforms as T
+__test__ = False
 
 
-def calculate_cc(img1, img2):
-    """Calculate Correlation Coefficient between two images"""
-    img1_flat = img1.flatten()
-    img2_flat = img2.flatten()
-    
-    mean1 = np.mean(img1_flat)
-    mean2 = np.mean(img2_flat)
-    
-    numerator = np.sum((img1_flat - mean1) * (img2_flat - mean2))
-    denominator = np.sqrt(np.sum((img1_flat - mean1)**2) * np.sum((img2_flat - mean2)**2))
-    
-    if denominator == 0:
-        return 0
-    return numerator / denominator
+def test(pth_path=None, out_path='outputs/fusion', dataset_root=None,
+         datasets=('M3FD', 'TNO', 'RoadScene'), device=None, limit=None,
+         ir_dir=None, vi_dir=None, resize=None, psnr_mode='legacy-normalized-255'):
+    paths = load_paths()
+    device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    model = FusionModel.from_checkpoint(pth_path or paths['final_checkpoint'], device).eval()
+    output = Path(out_path)
+    output.mkdir(parents=True, exist_ok=True)
+    root = Path(dataset_root or paths['dataset_root'])
+    pairs = {'custom': (Path(ir_dir), Path(vi_dir))} if ir_dir and vi_dir else {
+        name: (root / name / 'ir', root / name / 'vi') for name in datasets}
+    results = {}
+    for name, (ir_folder, vi_folder) in pairs.items():
+        files = sorted(p for p in ir_folder.iterdir()
+                       if p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'})
+        files = files[:limit] if limit is not None else files
+        if not files:
+            raise ValueError(f'No input images in {ir_folder}')
+        per_image = []
+        for path in files:
+            vis_path = vi_folder / path.name
+            if not vis_path.exists():
+                raise FileNotFoundError(f'Missing visible image paired with {path}: {vis_path}')
+            ir, vis = image_read_cv2(path, 'GRAY'), image_read_cv2(vis_path, 'GRAY')
+            if ir.shape != vis.shape:
+                raise ValueError(f'Unregistered pair: {path.name}, {ir.shape} vs {vis.shape}')
+            if resize:
+                ir, vis = [cv2.resize(x, (resize[1], resize[0]), interpolation=cv2.INTER_AREA) for x in (ir, vis)]
+            tensors = [torch.as_tensor(x.astype(np.float32) / 255.)[None, None].to(device) for x in (ir, vis)]
+            with torch.no_grad():
+                fused = model(*tensors)[0, 0].cpu().numpy() * 255.
+            metrics = fusion_metrics(fused, ir, vis, psnr_mode=psnr_mode)
+            per_image.append({'image': path.name, **metrics})
+            img_save(fused, path.stem, output / name)
+        mean = {key: float(np.mean([x[key] for x in per_image])) for key in ('CC', 'PSNR', 'SSIM', 'Qabf')}
+        results[name] = {'count': len(per_image), 'psnr_mode': psnr_mode,
+                         'mean': mean, 'per_image': per_image}
+        print(name, mean, flush=True)
+    def json_finite(value):
+        if isinstance(value, dict):
+            return {k: json_finite(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [json_finite(v) for v in value]
+        return None if isinstance(value, float) and not np.isfinite(value) else value
+    (output / 'metrics.json').write_text(json.dumps(json_finite(results), indent=2, allow_nan=False), encoding='utf-8')
+    return results
 
 
-def calculate_psnr(img1, img2):
-    """Calculate PSNR between two images"""
-    mse = np.mean((img1 - img2) ** 2)
-    if mse == 0:
-        return float('inf')
-    
-    max_pixel = 255.0
-    psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
-    return psnr
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config')
+    parser.add_argument('--checkpoint')
+    parser.add_argument('--dataset-root')
+    parser.add_argument('--datasets', nargs='+', default=['M3FD', 'TNO', 'RoadScene'])
+    parser.add_argument('--ir-dir')
+    parser.add_argument('--vi-dir')
+    parser.add_argument('--output-dir', default='outputs/fusion')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--limit', type=int)
+    parser.add_argument('--resize', nargs=2, type=int, metavar=('HEIGHT', 'WIDTH'))
+    parser.add_argument('--num-threads', type=int, default=4)
+    parser.add_argument('--psnr-mode', choices=PSNR_MODES, default='legacy-normalized-255',
+                        help='Default reproduces original Metric_torch normalized-MSE/peak-255 protocol')
+    args = parser.parse_args(argv)
+    if bool(args.ir_dir) != bool(args.vi_dir):
+        parser.error('--ir-dir and --vi-dir must be supplied together')
+    if args.limit is not None and args.limit < 1:
+        parser.error('--limit must be positive')
+    if args.resize and min(args.resize) < 7:
+        parser.error('--resize dimensions must be at least 7 for SSIM')
+    paths = load_paths(args.config)
+    torch.set_num_threads(args.num_threads)
+    test(args.checkpoint or paths['final_checkpoint'], args.output_dir,
+         args.dataset_root or paths['dataset_root'], args.datasets, args.device,
+         args.limit, args.ir_dir, args.vi_dir, args.resize, args.psnr_mode)
 
-
-
-
-
-def calculate_ssim(img1, img2):
-    """Calculate SSIM between two images"""
-    return ssim(img1, img2, data_range=255)
-
-
-def fusion_metrics(img_fused, img_ir, img_vis):
-    """
-    Calculate fusion metrics (CC, PSNR, SSIM)
-    Returns: dict with all metric values
-    """
-    # Ensure images are in the right format (0-255, uint8)
-    img_fused = np.clip(img_fused, 0, 255).astype(np.uint8)
-    img_ir = np.clip(img_ir, 0, 255).astype(np.uint8)
-    img_vis = np.clip(img_vis, 0, 255).astype(np.uint8)
-    
-    metrics = {}
-    
-    # CC with both source images
-    cc_ir = calculate_cc(img_fused, img_ir)
-    cc_vis = calculate_cc(img_fused, img_vis)
-    metrics['CC'] = (cc_ir + cc_vis) / 2  # Average CC
-    
-    # PSNR with both source images
-    psnr_ir = calculate_psnr(img_fused, img_ir)
-    psnr_vis = calculate_psnr(img_fused, img_vis)
-    metrics['PSNR'] = (psnr_ir + psnr_vis) / 2  # Average PSNR
-    
-    # SSIM with both source images
-    ssim_ir = calculate_ssim(img_fused, img_ir)
-    ssim_vis = calculate_ssim(img_fused, img_vis)
-    metrics['SSIM'] = (ssim_ir + ssim_vis) / 2  # Average SSIM
-    
-    return metrics
-
-
-def test(pth_path='', out_path=''):
-    warnings.filterwarnings("ignore")
-    logging.basicConfig(level=logging.CRITICAL)
-    
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    # ckpt_path=pth_path
-    ckpt_path= "models/DCEvo/DCEvo_epoch10_2025-07-25_07-47-21.pth"
-    
-    # Dictionary to store all metrics for all datasets
-    all_results = {}
-    
-    # for dataset_name in ["M3FD", "FMB", "TNO", "RoadScene"]:
-    for dataset_name in [ "M3FD","TNO", "RoadScene"]:
-        print("="*50)
-        print(f"Testing on dataset: {dataset_name}")
-        print("="*50)
-        
-        test_folder=os.path.join('datasets/',dataset_name) 
-        # test_out_folder=os.path.join('datasets/', dataset_name, 'DCEvo_Fusion_Only')
-        test_out_folder=os.path.join('datasets/', dataset_name, 'fusion0725')
-        # test_out_folder=os.path.join('result/05101032/', dataset_name, 'images')
-    
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        Encoder = nn.DataParallel(DE_Encoder()).to(device)
-        Decoder = nn.DataParallel(DE_Decoder()).to(device)
-        LFExtractor = nn.DataParallel(LowFreqExtractor(dim=64)).to(device)
-        HFExtractor = nn.DataParallel(HighFreqExtractor(num_layers=3)).to(device)
-    
-        Encoder.load_state_dict(torch.load(ckpt_path)['DE_Encoder'])
-        Decoder.load_state_dict(torch.load(ckpt_path)['DE_Decoder'])
-        LFExtractor.load_state_dict(torch.load(ckpt_path)['LowFreqExtractor'])
-        HFExtractor.load_state_dict(torch.load(ckpt_path)['HighFreqExtractor'])
-        
-        Encoder.eval()
-        Decoder.eval()
-        LFExtractor.eval()
-        HFExtractor.eval()   
-        transform = T.Compose([T.Resize((768, 1024)), T.ToTensor()])
-        
-        # Initialize metrics storage for this dataset
-        dataset_metrics = {
-            'CC': [],
-            'PSNR': [],
-            'SSIM': []
-        }
-        
-        img_list = os.listdir(os.path.join(test_folder,"ir"))
-        print(f"Processing {len(img_list)} images...")
-    
-        with torch.no_grad():
-            for idx, img_name in enumerate(tqdm(img_list, desc="Processing images")):
-                # Load original images for metric calculation
-                original_ir = image_read_cv2(os.path.join(test_folder,"ir",img_name), mode='GRAY')
-                original_vis = image_read_cv2(os.path.join(test_folder,"vi",img_name), mode='GRAY')
-    
-                data_IR=image_read_cv2(os.path.join(test_folder,"ir",img_name),mode='GRAY')[np.newaxis,np.newaxis, ...]/255.0
-                data_VIS = image_read_cv2(os.path.join(test_folder,"vi",img_name), mode='GRAY')[np.newaxis,np.newaxis, ...]/255.0
-    
-                data_IR,data_VIS = torch.FloatTensor(data_IR),torch.FloatTensor(data_VIS)
-                data_VIS, data_IR = data_VIS.cuda(), data_IR.cuda()
-                
-                feature_V_B, feature_V_D, feature_V = Encoder(data_VIS)
-                feature_I_B, feature_I_D, feature_I = Encoder(data_IR)
-                
-                feature_F_B = LFExtractor(feature_I_B+feature_V_B)
-                feature_F_D = HFExtractor(feature_I_D+feature_V_D)
-                
-                data_Fuse, feature_F = Decoder(data_VIS*0.5+data_IR*0.5, feature_F_B, feature_F_D) 
-                
-                fi = np.squeeze((data_Fuse * 255).cpu().numpy())
-                
-                # Calculate metrics
-                metrics = fusion_metrics(fi, original_ir, original_vis)
-                
-                # Store metrics
-                for metric_name, value in metrics.items():
-                    dataset_metrics[metric_name].append(value)
-                
-                # Save fused image
-                img_save(fi, img_name.split(sep='.')[0], test_out_folder)
-        
-        # Calculate average metrics for this dataset
-        avg_metrics = {}
-        for metric_name, values in dataset_metrics.items():
-            avg_metrics[metric_name] = np.mean(values)
-            avg_metrics[f'{metric_name}_std'] = np.std(values)
-        
-        all_results[dataset_name] = avg_metrics
-        
-        print(f"\nResults for {dataset_name}:")
-        print("-" * 30)
-        print(f"CC:   {avg_metrics['CC']:.4f} ± {avg_metrics['CC_std']:.4f}")
-        print(f"PSNR: {avg_metrics['PSNR']:.4f} ± {avg_metrics['PSNR_std']:.4f}")
-        print(f"SSIM: {avg_metrics['SSIM']:.4f} ± {avg_metrics['SSIM_std']:.4f}")
-        print(f"\n{len(img_list)} results have been saved in {test_out_folder}")
-    
-    # Print summary table
-    print("\n" + "="*65)
-    print("SUMMARY OF ALL DATASETS")
-    print("="*65)
-    print(f"{'Dataset':<12} {'CC':<12} {'PSNR':<12} {'SSIM':<12}")
-    print("-" * 65)
-    
-    for dataset_name, metrics in all_results.items():
-        print(f"{dataset_name:<12} {metrics['CC']:<12.4f} {metrics['PSNR']:<12.4f} {metrics['SSIM']:<12.4f}")
-    
-    # Save results to JSON file
-    results_file = "zhibiao/0725.json"
-    with open(results_file, 'w') as f:
-        json.dump(all_results, f, indent=4)
-    
-    print(f"\nDetailed results saved to: {results_file}")
-        
 
 if __name__ == '__main__':
-    test()
+    main()

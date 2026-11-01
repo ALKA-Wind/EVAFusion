@@ -129,7 +129,7 @@ class RAHF(nn.Module):
             self,
             score_types=('Thermal_Retention', 'Texture_Preservation', 'Artifacts', 'Sharpness', 'Overall_Score'),
             heatmap_types=('artifact_heatmap',),
-            vit_model="vit-large-patch16-384",
+            vit_model=None,
 
             multi_heads=True,
             # multi_heads=False,
@@ -144,6 +144,9 @@ class RAHF(nn.Module):
         self.feature_size = image_size // patch_size
 
         # 初始化共享的ViT模型
+        if vit_model is None:
+            from utils.paths import load_paths
+            vit_model = load_paths()["vit_model"]
         self.vit = ViTModel.from_pretrained(vit_model)
         self.hidden_dim = self.vit.config.hidden_size
 
@@ -193,30 +196,17 @@ class RAHF(nn.Module):
             for hm in self.heatmap_types:
                 results['heatmaps'][hm] = self.heatmap_predictor[hm](feature_map)
             for sc in self.score_types:
-                results['scores'][sc] = self.score_predictor[sc](feature_map).squeeze()
+                results['scores'][sc] = self.score_predictor[sc](feature_map).squeeze(-1)
         else:
             results['heatmaps'] = {hm: self.heatmap_predictor(feature_map) 
                                   for hm in self.heatmap_types}
-            results['scores'] = {sc: self.score_predictor(feature_map).squeeze()
+            results['scores'] = {sc: self.score_predictor(feature_map).squeeze(-1)
                                 for sc in self.score_types}
         return results
 
 
-def preprocess_image(image_path):
-    # transform = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
-    transform = AutoImageProcessor.from_pretrained("vit-large-patch16-384")
-    # image = Image.open(image_path).convert("RGB")
-    image = Image.open(image_path)
-    # 将图像进行处理，返回pytorch张量，提取张量数据，添加批次维度
-    return transform(image, return_tensors="pt")['pixel_values'][0].unsqueeze(0)
-
-
-if __name__ == "__main__":
-    # Example usage
-    image_path = "data/a.jpg"
-    caption = "A description of the image"
-
-    image_tensor = preprocess_image(image_path)
-    model = RAHF()
-
-    out = model(image_tensor, caption, target_text=None)
+def preprocess_image(image_path, vit_model=None):
+    from utils.paths import load_paths
+    processor = AutoImageProcessor.from_pretrained(vit_model or load_paths()["vit_model"])
+    with Image.open(image_path) as image:
+        return processor(image.convert("RGB"), return_tensors="pt")["pixel_values"]

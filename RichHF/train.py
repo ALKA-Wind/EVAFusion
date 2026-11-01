@@ -1,4 +1,8 @@
 import io
+import sys
+from pathlib import Path
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import os
 import shutil
 import datetime
@@ -16,15 +20,16 @@ from transformers import AutoImageProcessor
 from PIL import Image
 from tqdm import tqdm
 from scipy.stats import spearmanr, pearsonr
-from model import RAHF
-from metrics import metrics_func, mse_loss
+from reward_model.model import RAHF
+from RichHF.metrics import metrics_func, mse_loss
+from utils.paths import load_paths
 from torch.utils.tensorboard import SummaryWriter
 
 
 class HuggingFaceDataset(torch.utils.data.Dataset):
     def __init__(self, hf_dataset, vit_model="vit-large-patch16-384", image_size=384):
         self.dataset = hf_dataset
-        self.image_transform = AutoImageProcessor.from_pretrained(vit_model)
+        self.image_transform = AutoImageProcessor.from_pretrained(vit_model, use_fast=False)
         self.heatmap_transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
@@ -57,6 +62,7 @@ class HuggingFaceDataset(torch.utils.data.Dataset):
         # out['image'] = self.image_transform(img, return_tensors="pt")['pixel_values'][0]
 
         out['artifact_heatmap'] = self.preprocess_heatmap(sample["artifact_heatmap"])
+        out['image_id'] = str(sample.get('image_id', idx))
         # out['information_loss_heatmap'] = self.preprocess_heatmap(sample["information_loss_heatmap"])
 
         scores = sample["scores"]
@@ -93,7 +99,7 @@ def collate_fn(batch):
 
 
 # Training function
-def train_model(model, dataloader, optimizer, mse_criterion, device):
+def train_model(model, dataloader, optimizer, mse_criterion, device, score_weight=1., heatmap_weight=1.):
     model.train()
     total_loss = []
     iter_ = 0
@@ -118,13 +124,13 @@ def train_model(model, dataloader, optimizer, mse_criterion, device):
         out_scores = outputs['scores']
         for score in ('Thermal_Retention', 'Texture_Preservation', 'Artifacts', 'Sharpness', 'Overall_Score'):
             loss_dict[score] = mse_criterion(batch[score], out_scores[score])
-            total_batch_loss += loss_dict[score] * args.score_weight
+            total_batch_loss += loss_dict[score] * score_weight
 
         out_heatmaps = outputs['heatmaps']
         # for heatmap in ('artifact_heatmap', 'information_loss_heatmap'):
         for heatmap in ('artifact_heatmap',):
             loss_dict[heatmap] = mse_criterion(batch[heatmap], out_heatmaps[heatmap])
-            total_batch_loss += loss_dict[heatmap] * args.heatmap_weight
+            total_batch_loss += loss_dict[heatmap] * heatmap_weight
 
         # 反向传播与参数更新​
         total_batch_loss.backward()
@@ -155,14 +161,14 @@ def avg_metric(metrics):
     # for hm in ['artifact_heatmap', 'information_loss_heatmap']:
     for hm in ['artifact_heatmap']:
         for mt in ['nss', 'cc', 'similarity', 'AUC_Judd']:
-            h += metrics[f"heatmap/{mt}/{hm}"]
+            h += metrics.get(f"heatmap/{mt}/{hm}", 0.0)
 
 
     avg = s / 10 + + h / 4
-    return avg
+    return float(np.nan_to_num(avg))
 
 
-# def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation"):
+# def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation", score_weight=1., heatmap_weight=1.):
 #     model.eval()
 
 #     predicted_scores = defaultdict(list)
@@ -189,7 +195,7 @@ def avg_metric(metrics):
 #             out_scores = outputs['scores']
 #             for score in ('Thermal_Retention', 'Texture_Preservation', 'Artifacts', 'Sharpness', 'Overall_Score'):
 #                 loss_dict[score].append(mse_criterion(batch[score], out_scores[score]).item())
-#                 total_batch_loss += loss_dict[score][-1]  * args.score_weight
+#                 total_batch_loss += loss_dict[score][-1]  * score_weight
             
 #                 predicted_scores[score].append(out_scores[score].cpu().numpy())
 #                 target_scores[score].append(batch[score].cpu().numpy())
@@ -200,7 +206,7 @@ def avg_metric(metrics):
 #                 gt = batch[heatmap]
 #                 pred = out_heatmaps[heatmap]
 #                 loss_dict[heatmap].append(mse_criterion(gt, pred).item())
-#                 total_batch_loss += loss_dict[heatmap][-1] * args.heatmap_weight
+#                 total_batch_loss += loss_dict[heatmap][-1] * heatmap_weight
 
 #                 gt_sum = gt.sum(dim=[1, 2])
 #                 nonzero_gt = gt_sum > 0
@@ -238,7 +244,7 @@ def avg_metric(metrics):
 #     metrics['avg_metric'] = avg_metric(metrics)
 #     return metrics
 
-def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation"):
+def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation", score_weight=1., heatmap_weight=1.):
     model.eval()
 
     predicted_scores = defaultdict(list)
@@ -262,7 +268,7 @@ def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation")
             for score in ('Thermal_Retention', 'Texture_Preservation', 'Artifacts', 'Sharpness', 'Overall_Score'):
                 loss_val = mse_criterion(batch[score], out_scores[score]).item()
                 loss_dict[score].append(loss_val)
-                total_batch_loss += loss_val * args.score_weight
+                total_batch_loss += loss_val * score_weight
 
                 predicted_scores[score].append(out_scores[score].cpu().numpy())
                 target_scores[score].append(batch[score].cpu().numpy())
@@ -274,7 +280,7 @@ def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation")
                 pred = out_heatmaps[heatmap]
                 heatmap_loss = mse_criterion(gt, pred).item()
                 loss_dict[heatmap].append(heatmap_loss)
-                total_batch_loss += heatmap_loss * args.heatmap_weight
+                total_batch_loss += heatmap_loss * heatmap_weight
 
                 gt_sum = gt.sum(dim=[1, 2])
                 nonzero_gt = gt_sum > 0
@@ -294,8 +300,12 @@ def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation")
     for score in ('Thermal_Retention', 'Texture_Preservation', 'Artifacts', 'Sharpness', 'Overall_Score'):
         pred = np.concatenate(predicted_scores[score])
         gt = np.concatenate(target_scores[score])
-        metrics[f'score/plcc/{score}'] = pearsonr(pred, gt)[0]
-        metrics[f'score/srcc/{score}'] = spearmanr(pred, gt)[0]
+        if len(pred) < 2 or np.ptp(pred) == 0 or np.ptp(gt) == 0:
+            plcc, srcc = 0., 0.
+        else:
+            plcc, srcc = float(pearsonr(pred, gt)[0]), float(spearmanr(pred, gt)[0])
+        metrics[f'score/plcc/{score}'] = plcc
+        metrics[f'score/srcc/{score}'] = srcc
         metrics[f'loss/{score}'] = np.mean(loss_dict[score])
 
     for heatmap in ('artifact_heatmap',):
@@ -310,11 +320,11 @@ def evaluate_model(model, dataloader, mse_criterion, device, phase="Validation")
     return metrics
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Training and evaluation for RAHF.")
 
-    parser.add_argument("--vit_model", type=str, default="vit-large-patch16-384", help="Name of the Vision Transformer model.")
-    parser.add_argument("--multi_heads", action="store_true", help="Whether to use multi-heads version or the augmented prompt version.")
+    parser.add_argument("--vit_model", type=str, default=None, help="Path or Hugging Face id of the Vision Transformer model.")
+    parser.add_argument("--multi_heads", action="store_true", default=True, help="Whether to use multi-heads version or the augmented prompt version.")
     parser.add_argument("--num_epochs", type=int, default=30, help="Number of training epochs.")
     parser.add_argument("--init_lr", type=float, default=2e-5, help="Initial learning rate.")
     parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum learning rate.")
@@ -326,11 +336,25 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training.")
     parser.add_argument("--freeze_vit", action="store_true", help="Freeze the ViT weights.")
     parser.add_argument("--ckpt", type=str, default=None, help="Path to the checkpoint to resume.")
-    parser.add_argument("--log_dir", type=str, default="exp", help="Path (with an additional time stamp) to save model checkpoints and logs.")
+    parser.add_argument("--log_dir", type=str, default="outputs/reward_training", help="Path (with an additional time stamp) to save model checkpoints and logs.")
     parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training (for DDP).")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU device id (single GPU training)")
 
-    args = parser.parse_args()
+    parser.add_argument("--single-head", dest="multi_heads", action="store_false")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--train_path", default=None)
+    parser.add_argument("--dev_path", default=None)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--num_threads", type=int, default=4)
+    parser.add_argument("--device", default=None)
+    args = parser.parse_args(argv)
+    if args.num_epochs < 1 or args.batch_size < 1:
+        parser.error('num_epochs and batch_size must be positive')
+    torch.set_num_threads(args.num_threads)
+    paths = load_paths(args.config)
+    args.vit_model = args.vit_model or paths["vit_model"]
+    args.train_path = args.train_path or paths["train_data"]
+    args.dev_path = args.dev_path or paths["dev_data"]
     print(args)
 
     # Distributed Setup
@@ -345,27 +369,16 @@ if __name__ == "__main__":
             print("Distributed training with {} GPUs".format(os.environ["WORLD_SIZE"]))
     else:
         distributed = False
-        device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
+        device = torch.device(args.device or (f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"))
         local_rank = 0
 
     # Model and Dataset Setup
     vit_model = args.vit_model
 
-    patch_size = 16
-    image_size = 384
-    if vit_model.startswith('google/vit'):
-        patch_size = int(vit_model.split('-')[-2].replace('patch', ''))
-        image_size = int(vit_model.split('-')[-1])
-    elif vit_model == 'facebook/dino-vitb8':
-        patch_size = 8
-        image_size = 224
-    elif vit_model == 'facebook/dino-vitb16':
-        patch_size = 16
-        image_size = 224
-
-    # Load dataset
-    train_path = '/public/home/meiqingyun/tmp/IVIF/RichHF/data/train'
-    dev_path = '/public/home/meiqingyun/tmp/IVIF/RichHF/data/dev'
+    from transformers import ViTConfig
+    vit_config = ViTConfig.from_pretrained(args.vit_model)
+    patch_size, image_size = vit_config.patch_size, vit_config.image_size
+    train_path, dev_path = args.train_path, args.dev_path
     full_traindataset = load_from_disk(train_path)
     full_devdataset = load_from_disk(dev_path)
 
@@ -401,18 +414,18 @@ if __name__ == "__main__":
     # Create dataloaders
     if distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=4)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=args.num_workers)
         # Only rank 0 will run evaluation and logging
         if local_rank == 0:
-            dev_dataloader = DataLoader(dev_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-        #     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+            dev_dataloader = DataLoader(dev_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        #     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
         else:
             dev_dataloader = None
         #     test_dataloader = None
     else:
-        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-        dev_dataloader = DataLoader(dev_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-        # test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+        dev_dataloader = DataLoader(dev_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        # test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     # Initialize model, optimizer, and loss functions
     model = RAHF(
@@ -420,7 +433,8 @@ if __name__ == "__main__":
         multi_heads=args.multi_heads, patch_size=patch_size, image_size=image_size
     )
     if args.ckpt:
-        msg = model.load_state_dict(torch.load(args.ckpt, map_location='cpu'))
+        state = torch.load(args.ckpt, map_location='cpu', weights_only=True)
+        msg = model.load_state_dict({key.removeprefix('module.'): value for key, value in state.items()})
         print(f"Loaded from ckpt:", msg)
     model = model.to(device)
 
@@ -504,7 +518,7 @@ if __name__ == "__main__":
         script_path = os.path.abspath(__file__)
         shutil.copy(script_path, os.path.join(log_dir, 'train.py'))
         dirname = os.path.dirname(script_path)
-        shutil.copy(os.path.join(dirname, 'model.py'), os.path.join(log_dir, 'model.py'))
+        shutil.copy(Path(__file__).resolve().parents[1] / 'reward_model/model.py', os.path.join(log_dir, 'model.py'))
 
         # Save the arguments config
         args_dict = vars(args)
@@ -516,7 +530,7 @@ if __name__ == "__main__":
 
     # Training loop
     val_metrics_ = []
-    max_val_metric = 0
+    max_val_metric = -float('inf')
     train_loss_ = []
 
     for epoch in range(args.num_epochs):
@@ -528,7 +542,7 @@ if __name__ == "__main__":
             print(f"Epoch {epoch + 1}/{args.num_epochs}")
 
         # Training phase
-        train_loss, loss_all = train_model(model, train_dataloader, optimizer, mse_criterion, device)
+        train_loss, loss_all = train_model(model, train_dataloader, optimizer, mse_criterion, device, args.score_weight, args.heatmap_weight)
         if local_rank == 0:
             print(f"Training Loss: {train_loss:.4f}")
             writer.add_scalar('loss/train', train_loss, epoch)
@@ -540,7 +554,7 @@ if __name__ == "__main__":
                 json.dump(train_loss_, f, indent=4)
 
             # Validation phase
-            val_metrics = evaluate_model(model, dev_dataloader, mse_criterion, device, phase="Validation")
+            val_metrics = evaluate_model(model, dev_dataloader, mse_criterion, device, phase="Validation", score_weight=args.score_weight, heatmap_weight=args.heatmap_weight)
             print(f"Validation Metrics: {val_metrics}")
             for m, v in val_metrics.items():
                 writer.add_scalar(m, v, epoch)
@@ -580,3 +594,6 @@ if __name__ == "__main__":
 
     if distributed:
         torch.distributed.destroy_process_group()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+{
+  "file": "model_best.pt",
+  "bytes": 2996817023,
+  "sha256": "dd7b73645275bb000d6862b32fc3ee57228c56db067a0d56456e64f79b25b310",
+  "parts": [
+    {
+      "file": "model_best.pt.part01",
+      "bytes": 1500000000,
+      "sha256": "aca77db2838402f8ab936c691a6b0e2370502a19a922f01c11a2a20646436e01"
+    },
+    {
+      "file": "model_best.pt.part02",
+      "bytes": 1496817023,
+      "sha256": "904775fd905f1b34e20020f4311f6e7aa04546ffeb823b04cf2a1ced3596f85b"
+    }
+  ]
+}

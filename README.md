@@ -2,7 +2,7 @@
 
 论文：**Bridging Human Evaluation to Infrared and Visible Image Fusion**。
 
-本项目已恢复奖励模型训练、SAM+GRPO 微调 IVIF 与融合推理。当前 SAM+GRPO 保留论文的同图语义区域优势与裁剪目标，将输出变化比率明确修订为随机策略概率比率；不宣称逐公式复现或已复现论文完整指标。
+
 
 ![Pipeline](Figures/pipeline.jpg)
 
